@@ -341,6 +341,7 @@ sub sort_devs_by_freespace {
 sub cmd_create_close {
     my MogileFS::Worker::Query $self = shift;
     my $args = shift;
+    my %devid2path = ();
 
     # has to be filled out for some plugins
     $args->{dmid} = $self->check_domain($args)
@@ -353,8 +354,25 @@ sub cmd_create_close {
     my $dmid  = $args->{dmid};
     my $key   = $args->{key};
     my $fidid = $args->{fid}    or return $self->err_line("no_fid");
-    my $devid = $args->{devid}  or return $self->err_line("no_devid");
-    my $path  = $args->{path}   or return $self->err_line("no_path");
+    my $paths = $args->{paths};
+
+    if (defined $paths) { # new style multi destination upload
+        if ($paths !~ /\A\d+\z/ || $paths < 1) {
+            return $self->err_line("bogus_args");
+        }
+
+        foreach my $i (1..$paths) {
+            my $devid = $args->{"devid$i"} or return $self->err_line("no_devid");
+            my $path = $args->{"path$i"} or return $self->err_line("no_path");
+            $devid2path{$devid} = $path;
+        }
+    } else { # old, single destination upload
+        my $devid = $args->{devid} or return $self->err_line("no_devid");
+        my $path = $args->{path} or return $self->err_line("no_path");
+
+        $devid2path{$devid} = $path;
+    }
+
     my $checksum = $args->{checksum};
 
     if ($checksum) {
@@ -363,11 +381,15 @@ sub cmd_create_close {
     }
 
     my $fid  = MogileFS::FID->new($fidid);
-    my $dfid = MogileFS::DevFID->new($devid, $fid);
+    my @dfids;
+    while (my ($devid, $path) = each %devid2path) {
+        my $dfid = MogileFS::DevFID->new($devid, $fid);
 
-    # is the provided path what we'd expect for this fid/devid?
-    return $self->err_line("bogus_args")
-        unless $path eq $dfid->url;
+        # is the provided path what we'd expect for this fid/devid?
+        $path eq $dfid->url or return $self->err_line("bogus_args");
+
+        push @dfids, $dfid;
+    }
 
     my $sto = Mgd::get_store();
 
@@ -380,11 +402,14 @@ sub cmd_create_close {
 
     # Protect against leaving orphaned uploads.
     my $failed = sub {
-        $dfid->add_to_db;
+        $_->add_to_db foreach @dfids;
         $fid->delete;
     };
 
-    unless ($trow->{devids} =~ m/\b$devid\b/) {
+    # check for invalid destinations
+    my %valid_dests = map { $_ => 1 } split(/,/, $trow->{devids});
+    foreach my $devid (keys %devid2path) {
+        next if $valid_dests{$devid};
         $failed->();
         return $self->err_line("invalid_destdev", "File uploaded to invalid dest $devid. Valid devices were: " . $trow->{devids});
     }
@@ -396,36 +421,40 @@ sub cmd_create_close {
         return $self->ok_line;
     }
 
+    my $size;
+
     # get size of file and verify that it matches what we were given, if anything
-    my $httpfile = MogileFS::HTTPFile->at($path);
-    my $size = $httpfile->size;
+    foreach my $path (values %devid2path) { # TODO: parallelize
+        my $httpfile = MogileFS::HTTPFile->at($path);
+        $size = $httpfile->size;
 
-    # size check is optional? Needs to support zero byte files.
-    $args->{size} = -1 unless $args->{size};
-    if (!defined($size) || $size == MogileFS::HTTPFile::FILE_MISSING) {
-        # storage node is unreachable or the file is missing
-        my $type    = defined $size ? "missing" : "cantreach";
-        my $lasterr = MogileFS::Util::last_error();
-        $failed->();
-        return $self->err_line("size_verify_error", "Expected: $args->{size}; actual: 0 ($type); path: $path; error: $lasterr")
-    }
-
-    if ($args->{size} > -1 && ($args->{size} != $size)) {
-        $failed->();
-        return $self->err_line("size_mismatch", "Expected: $args->{size}; actual: $size; path: $path")
-    }
-
-    # checksum validation is optional as it can be very expensive
-    # However, we /always/ verify it if the client wants us to, even
-    # if the class does not enforce or store it.
-    if ($checksum && $args->{checksumverify}) {
-        my $alg = $checksum->hashname;
-        my $actual = $httpfile->digest($alg, sub { $self->still_alive });
-        if ($actual ne $checksum->{checksum}) {
+        # size check is optional? Needs to support zero byte files.
+        $args->{size} = -1 unless $args->{size};
+        if (!defined($size) || $size == MogileFS::HTTPFile::FILE_MISSING) {
+            # storage node is unreachable or the file is missing
+            my $type    = defined $size ? "missing" : "cantreach";
+            my $lasterr = MogileFS::Util::last_error();
             $failed->();
-            $actual = "$alg:" . unpack("H*", $actual);
-            return $self->err_line("checksum_mismatch",
-                           "Expected: $checksum; actual: $actual; path: $path");
+            return $self->err_line("size_verify_error", "Expected: $args->{size}; actual: 0 ($type); path: $path; error: $lasterr")
+        }
+
+        if ($args->{size} > -1 && ($args->{size} != $size)) {
+            $failed->();
+            return $self->err_line("size_mismatch", "Expected: $args->{size}; actual: $size; path: $path")
+        }
+
+        # checksum validation is optional as it can be very expensive
+        # However, we /always/ verify it if the client wants us to, even
+        # if the class does not enforce or store it.
+        if ($checksum && $args->{checksumverify}) {
+            my $alg = $checksum->hashname;
+            my $actual = $httpfile->digest($alg, sub { $self->still_alive });
+            if ($actual ne $checksum->{checksum}) {
+                $failed->();
+                $actual = "$alg:" . unpack("H*", $actual);
+                return $self->err_line("checksum_mismatch",
+                               "Expected: $checksum; actual: $actual; path: $path");
+            }
         }
     }
 
@@ -442,8 +471,8 @@ sub cmd_create_close {
 
     # TODO: check for EIO?
 
-    # insert file_on row
-    $dfid->add_to_db;
+    # insert file_on rows
+    $_->add_to_db foreach @dfids;
 
     $checksum->maybe_save($dmid, $trow->{classid}) if $checksum;
 
@@ -453,7 +482,7 @@ sub cmd_create_close {
                             key     => $key,
                             length  => $size,
                             classid => $trow->{classid},
-                            devcount => 1,
+                            devcount => scalar(@dfids),
                             );
 
     # mark it as needing replicating:
