@@ -84,7 +84,7 @@ sub every {
             next;
         }
 
-        Time::HiRes::sleep($sleep_for) if $sleep_for > 0;
+        wait_for_readability($psock_fd, $sleep_for) if $sleep_for > 0;
         #local $Mgd::POST_SLEEP_DEBUG = 1;
         # This calls read_from_parent. Workers used to needlessly call
         # parent_ping constantly.
