@@ -1495,7 +1495,7 @@ sub cmd_fsck_start {
 
     # and start it:
     $sto->set_server_setting("fsck_host", MogileFS::Config->hostname);
-    MogileFS::ProcManager->wake_a("fsck");
+    MogileFS::ProcManager->wake_a("job_master");
 
     return $self->ok_line;
 }
