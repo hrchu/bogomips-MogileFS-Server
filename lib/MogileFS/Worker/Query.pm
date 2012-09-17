@@ -404,36 +404,49 @@ sub cmd_create_close {
         return $self->ok_line;
     }
 
-    # get size of file and verify that it matches what we were given, if anything
-    my $httpfile = MogileFS::HTTPFile->at($path);
-    my $size = $httpfile->size;
+    my $size;
 
-    # size check is optional? Needs to support zero byte files.
-    $args->{size} = -1 unless $args->{size};
-    if (!defined($size) || $size == MogileFS::HTTPFile::FILE_MISSING) {
-        # storage node is unreachable or the file is missing
-        my $type    = defined $size ? "missing" : "cantreach";
-        my $lasterr = MogileFS::Util::last_error();
-        $failed->();
-        return $self->err_line("size_verify_error", "Expected: $args->{size}; actual: 0 ($type); path: $path; error: $lasterr")
-    }
-
-    if ($args->{size} > -1 && ($args->{size} != $size)) {
-        $failed->();
-        return $self->err_line("size_mismatch", "Expected: $args->{size}; actual: $size; path: $path")
-    }
-
-    # checksum validation is optional as it can be very expensive
-    # However, we /always/ verify it if the client wants us to, even
-    # if the class does not enforce or store it.
-    if ($checksum && $args->{checksumverify}) {
-        my $alg = $checksum->hashname;
-        my $actual = $httpfile->digest($alg, sub { $self->still_alive });
-        if ($actual ne $checksum->{checksum}) {
+    # sometimes, the client will just ask us to trust them and we can skip
+    # the latency of size/checksum verification.
+    if ($args->{noverify}) {
+        if (defined $args->{size}) {
+            $size = $args->{size};
+        } else {
             $failed->();
-            $actual = "$alg:" . unpack("H*", $actual);
-            return $self->err_line("checksum_mismatch",
-                           "Expected: $checksum; actual: $actual; path: $path");
+            return $self->err_line("bad_params", "size must be specified with noverify");
+        }
+    } else {
+        # get size of file and verify that it matches what we were given, if anything
+        my $httpfile = MogileFS::HTTPFile->at($path);
+        $size = $httpfile->size;
+
+        # size check is optional? Needs to support zero byte files.
+        $args->{size} = -1 unless $args->{size};
+        if (!defined($size) || $size == MogileFS::HTTPFile::FILE_MISSING) {
+            # storage node is unreachable or the file is missing
+            my $type    = defined $size ? "missing" : "cantreach";
+            my $lasterr = MogileFS::Util::last_error();
+            $failed->();
+            return $self->err_line("size_verify_error", "Expected: $args->{size}; actual: 0 ($type); path: $path; error: $lasterr")
+        }
+
+        if ($args->{size} > -1 && ($args->{size} != $size)) {
+            $failed->();
+            return $self->err_line("size_mismatch", "Expected: $args->{size}; actual: $size; path: $path")
+        }
+
+        # checksum validation is optional as it can be very expensive
+        # However, we /always/ verify it if the client wants us to, even
+        # if the class does not enforce or store it.
+        if ($checksum && $args->{checksumverify}) {
+            my $alg = $checksum->hashname;
+            my $actual = $httpfile->digest($alg, sub { $self->still_alive });
+            if ($actual ne $checksum->{checksum}) {
+                $failed->();
+                $actual = "$alg:" . unpack("H*", $actual);
+                return $self->err_line("checksum_mismatch",
+                               "Expected: $checksum; actual: $actual; path: $path");
+            }
         }
     }
 

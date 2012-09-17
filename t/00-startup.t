@@ -367,6 +367,32 @@ foreach my $t (qw(file file_on file_to_delete)) {
     is($info->{fid}, $opts->{fid}, "explicit fid is correctly set");
 }
 
+# do not verify the upload
+{
+    my $c = IO::Socket::INET->new(PeerAddr => '127.0.0.1:7001', Timeout => 3);
+    die "Failed to connect to test tracker" unless $c;
+    print $c "create_open "
+        . "domain=testdom&class=&key=not_there\n";
+    my $res = <$c>;
+    ok($res =~ m/fid=(\d+)/, "bare create_open worked (fid)");
+    my $fidid = $1;
+    ok($res =~ m/devid=(\d+)/, "bare create_open worked (devid)");
+    my $devid = $1;
+    ok($res =~ m/path=([^&\s]+)/, "bare create_open worked (path)");
+    my $path = $1;
+
+    # Pretend we uploaded something with noverify=1
+    print $c "create_close noverify=1&"
+        . "domain=testdom&fid=$fidid&devid=$devid&size=123&key=not_there"
+        . "&path=$path\n";
+    my $res2 = <$c>;
+    ok($res2 =~ m/OK/, "uploaded successfully with noverify");
+
+    my @urls = $mogc->get_paths("not_there", { noverify => 1});
+    is(1, scalar @urls, "only one URL returned");
+    is($path, $urls[0], "get_paths noverify=1 succeeds on non-existent file");
+}
+
 sub try_for {
     my ($tries, $code) = @_;
     for (1..$tries) {
