@@ -256,7 +256,7 @@ sub cmd_create_open {
     }
 
     if ($size) {
-        @devices = grep { ($_->mb_free * 1024*1024) > $size } @devices;
+        @devices = grep { $_->bytes_usable > $size } @devices;
     }
 
     # find suitable device(s) to put this file on.
@@ -267,6 +267,7 @@ sub cmd_create_open {
 
         last unless $ddev;
         next unless $ddev->not_on_hosts(map { $_->host } @dests);
+        $ddev->bytes_adjust($size);
 
         push @dests, $ddev;
     }

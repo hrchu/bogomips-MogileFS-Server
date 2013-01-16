@@ -28,6 +28,8 @@ sub new_from_args {
         %{$args},
     }, $class;
 
+    $self->{bytes_usable} = undef;
+
     # FIXME: No guarantee (as of now?) that hosts get loaded before devs.
     #$self->host || die "No host for $self->{devid} (host $self->{hostid})";
 
@@ -156,6 +158,21 @@ sub mb_free {
     my $self = shift;
     return $self->{mb_total} - $self->{mb_used}
         if $self->{mb_total} && defined $self->{mb_used};
+}
+
+sub bytes_usable {
+    my $self = shift;
+    unless (defined $self->{bytes_usable}) {
+        my $min_free = MogileFS->config('min_free_space');
+        $self->{bytes_usable} = ($self->mb_free - $min_free) * 1024 * 1024;
+    }
+	return $self->{bytes_usable};
+}
+
+sub bytes_adjust {
+    my ($self, $size) = @_;
+
+    $self->{bytes_usable} -= $size if (defined $size);
 }
 
 sub mb_used {
