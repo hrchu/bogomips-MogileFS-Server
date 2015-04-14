@@ -172,7 +172,13 @@ sub replicate_using_torepl_table {
                 last;
             }
         }
-        $self->rebalance_devfid($devfid) if $devfid;
+        if ($devfid) {
+            if ($self->rebalance_devfid($devfid)) {
+                # disable exponential backoff below if we rebalanced due to
+                # excessive replication:
+                $todo->{failcount} = 0;
+            }
+        }
     }
 
     # at this point, the rest of the errors require exponential backoff.  define what this means
